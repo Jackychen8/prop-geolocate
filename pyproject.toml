@@ -1,0 +1,22 @@
+[project]
+name = "propgeo"
+version = "0.1.0"
+description = "Acoustic geolocation from propeller-aircraft Doppler curves + ADS-B (research/test harness)"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26", "scipy>=1.11", "pandas>=2.0", "plotly>=5.24", "streamlit>=1.35", "tabulate"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+propgeo = "propgeo.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["propgeo"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
