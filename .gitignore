@@ -4,3 +4,4 @@ __pycache__/
 out/
 .pytest_cache/
 *.egg-info/
+drafts/

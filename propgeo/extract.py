@@ -47,6 +47,8 @@ class ExtractConfig:
     min_single_partial_s: float = 10.0  # lone partials are often crossing artefacts
     min_single_partial_sweep: float = 0.03  # ...and flat ones fit any distant aircraft
     snr_cap_db: float = 35.0
+    collision_rel: float = 0.015  # partials this close in pitch may have swapped sources...
+    collision_frames: int = 5  # ...within this many frames; cut them there
 
 
 @dataclass(eq=False)
@@ -241,6 +243,38 @@ def _sweep(p: Partial) -> float:
     return float(np.ptp(np.log(p.freqs)))
 
 
+def _cut_at_collisions(partials: list[Partial], cfg) -> list[Partial]:
+    """Split partials wherever another partial passes within `collision_rel`.
+
+    A frame-to-frame tracker can only jump from one aircraft's harmonic to
+    another's where the two nearly collide. Cutting there removes the possible
+    swap; the grouping step re-links the true continuation through the other
+    harmonics, which cross at different times.
+    """
+    if len(partials) < 2:
+        return partials
+    n_frames = max(int(p.frames.max()) for p in partials) + 1
+    occ: list[list[tuple[float, int]]] = [[] for _ in range(n_frames)]
+    for pid, p in enumerate(partials):
+        for f, fr in zip(p.frames, p.freqs):
+            occ[f].append((fr, pid))
+    W = cfg.collision_frames
+    out = []
+    for pid, p in enumerate(partials):
+        bad = np.zeros(len(p.frames), bool)
+        for i, (f, fr) in enumerate(zip(p.frames, p.freqs)):
+            lo, hi = max(0, f - W), min(n_frames, f + W + 1)
+            for g in range(lo, hi):
+                if any(q != pid and abs(fq - fr) <= cfg.collision_rel * fr for fq, q in occ[g]):
+                    bad[i] = True
+                    break
+        if not bad.any():
+            out.append(p)
+        else:
+            out.extend(_split_runs(_subset(p, ~bad), cfg))
+    return out
+
+
 def _group_curves(partials: list[Partial], n_frames: int, cfg) -> list[DopplerCurve]:
     """Greedy grouping of partials into per-source Doppler curves.
 
@@ -311,7 +345,7 @@ def extract_curves(audio: np.ndarray, sr: int, cfg: ExtractConfig | None = None)
     partials = _track(peaks, cfg)
     t_off = times[0]  # frame-centre time of frame 0
 
-    moving = [p for p in partials if np.ptp(np.log(p.freqs)) >= cfg.min_track_sweep]
+    moving = [p for p in _cut_at_collisions(partials, cfg) if np.ptp(np.log(p.freqs)) >= cfg.min_track_sweep]
     curves = []
     for c in _group_curves(moving, len(times), cfg):
         c.t = c.t + t_off

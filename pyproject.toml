@@ -3,7 +3,7 @@ name = "propgeo"
 version = "0.1.0"
 description = "Acoustic geolocation from propeller-aircraft Doppler curves + ADS-B (research/test harness)"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.26", "scipy>=1.11", "pandas>=2.0", "plotly>=5.24", "streamlit>=1.35", "tabulate"]
+dependencies = ["numpy>=1.26", "scipy>=1.11", "pandas>=2.0", "plotly>=5.24", "streamlit>=1.35", "tabulate", "matplotlib>=3.8"]
 
 [project.optional-dependencies]
 test = ["pytest"]

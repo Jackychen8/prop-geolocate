@@ -48,6 +48,7 @@ CONDITIONS: dict[str, dict] = {
     "RPM drift 0.5%": dict(drift=0.005),
     "observer elevation off by 50 m": dict(elev_err=50.0),
     "2 planes + level cue": dict(use_level=True),
+    "field-test path: no area hint, clock +/-15 s": dict(center_err_m=None, time_err=10.0, window=15.0),
     "realistic: phone+babble+SNR0+clock+/-30s": dict(
         degrade="aac_phone", babble_db=3.0, snr_db=0.0, time_err=25.0, window=30.0, drift=0.002),
 }
@@ -64,11 +65,13 @@ def run_trial(cond: str, params: dict, seed: int) -> dict:
     rng = np.random.default_rng(seed + 77)
     toff = rng.uniform(-p["time_err"], p["time_err"]) if p["time_err"] else 0.0
     ang = rng.uniform(0, 2 * np.pi)
-    cdist = abs(rng.normal(0, p["center_err_m"]))
-    cdist = min(cdist, 5000.0)
-    dlat = cdist * np.cos(ang) / 111_320.0
-    dlon = cdist * np.sin(ang) / (111_320.0 * np.cos(np.deg2rad(scn.lat)))
-    center = (scn.lat + dlat, scn.lon + dlon)
+    if p["center_err_m"] is None:
+        center = None  # auto: centred on low-flying traffic, as `field-test` does by default
+    else:
+        cdist = min(abs(rng.normal(0, p["center_err_m"])), 5000.0)
+        dlat = cdist * np.cos(ang) / 111_320.0
+        dlon = cdist * np.sin(ang) / (111_320.0 * np.cos(np.deg2rad(scn.lat)))
+        center = (scn.lat + dlat, scn.lon + dlon)
     cfg = LocateConfig(time_window_s=p["window"], observer_alt_m=scn.obs_alt + p["elev_err"], use_level=p["use_level"])
     ex = extract_curves(audio, sr)
     res = locate(ex.curves, tracks, scn.t_start + toff, center=center, cfg=cfg)

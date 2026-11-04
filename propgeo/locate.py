@@ -33,6 +33,7 @@ from .physics import Kinematics, propagate
 @dataclass
 class LocateConfig:
     search_radius_m: float = 8000.0
+    auto_radius_m: float = 12000.0  # used instead when no search centre is given
     coarse_step_m: float = 300.0
     time_window_s: float = 0.0  # +/- uncertainty of the audio start time
     time_step_s: float = 1.5
@@ -162,6 +163,28 @@ def _huber(z, k):
     return np.where(a <= k, 0.5 * z * z, k * a - 0.5 * k * k)
 
 
+def _capped(z, k, zu):
+    """Huber loss capped at the 'unexplained' level: a point that is way off
+    (e.g. a stretch where the tracker followed another plane's harmonic)
+    costs exactly what an unexplained point costs, no more."""
+    return np.minimum(_huber(z, k), _huber(zu, k))
+
+
+def _capped_loss_factory(k: float, zu: float):
+    """scipy least_squares callable loss matching _capped (z = (e/k)^2)."""
+    u2 = (zu / k) ** 2
+
+    def loss(z):
+        z = np.asarray(z, float)
+        sz = np.sqrt(np.maximum(z, 1e-12))
+        rho = np.where(z <= 1, z, np.where(z <= u2, 2 * sz - 1, 2 * np.sqrt(u2) - 1))
+        d1 = np.where(z <= 1, 1.0, np.where(z <= u2, 1 / sz, 0.0))
+        d2 = np.where((z > 1) & (z <= u2), -0.5 * sz ** -3, 0.0)
+        return np.vstack([rho, d1, d2])
+
+    return loss
+
+
 class _Model:
     def __init__(self, kins: list[Kinematics], curves: list[DopplerCurve], audio_start: float,
                  frame: LocalFrame, cfg: LocateConfig):
@@ -202,13 +225,13 @@ class _Model:
                     res = b.y - ld
                     wv = b.w * valid
                     m = np.sum(wv * res, -1) / np.maximum(np.sum(wv, -1), 1e-9)
-                    rho = _huber((res - m[..., None]) / sig, k)
+                    rho = _capped((res - m[..., None]) / sig, k, cfg.unexplained_z)
                     rho = np.where(valid, rho, unexpl_pt)
                     cost = np.sum(b.w * rho, -1)
                     if self._use_level(b):
                         lres = b.lv + 20 * np.log10(r)
                         lm = np.sum(valid * lres, -1) / np.maximum(np.sum(valid, -1), 1)
-                        lrho = _huber((lres - lm[..., None]) / cfg.sigma_level_db, k)
+                        lrho = _capped((lres - lm[..., None]) / cfg.sigma_level_db, k, cfg.unexplained_z)
                         cost = cost + np.sum(np.where(valid, lrho, unexpl_pt), -1)
                     sl = slice(g0, g0 + cfg.chunk)
                     better = cost < best[j, sl]
@@ -239,7 +262,7 @@ class _Model:
 
     def curve_cost(self, j, a, x, y, delta) -> float:
         e, *_ = self.curve_residuals(j, a, x, y, delta)
-        return float(np.sum(_huber(e, self.cfg.huber_k)))
+        return float(np.sum(_capped(e, self.cfg.huber_k, self.cfg.unexplained_z)))
 
     def assign(self, x, y, delta):
         out, total = [], 0.0
@@ -270,7 +293,8 @@ class _Model:
         lo = [-R, -R] + ([-cfg.time_window_s - 2 * cfg.time_step_s] if free_delta else [])
         hi = [R, R] + ([cfg.time_window_s + 2 * cfg.time_step_s] if free_delta else [])
         p0 = np.clip(p0, np.array(lo) + 1e-6, np.array(hi) - 1e-6)
-        sol = least_squares(fun, p0, loss="huber", f_scale=cfg.huber_k, bounds=(lo, hi),
+        sol = least_squares(fun, p0, loss=_capped_loss_factory(cfg.huber_k, cfg.unexplained_z),
+                            f_scale=cfg.huber_k, bounds=(lo, hi),
                             x_scale=[100.0, 100.0] + ([1.0] if free_delta else []), max_nfev=200)
         return sol
 
@@ -317,6 +341,10 @@ def locate(
         return LocateResult(False, "no Doppler curves extracted from the audio")
     dur = max(float(c.t[-1]) for c in curves)
     if center is None:
+        # no area hint: low traffic can sit well off to one side, so search wider
+        from dataclasses import replace
+
+        cfg = replace(cfg, search_radius_m=max(cfg.search_radius_m, cfg.auto_radius_m))
         center = auto_center(tracks, audio_start_unix + dur / 2)
         if center is None:
             return LocateResult(False, "no low-altitude ADS-B traffic during the clip to centre a search on")
@@ -382,6 +410,24 @@ def locate(
         return LocateResult(False, "no curve could be matched to any ADS-B aircraft", center=center,
                             n_aircraft=len(kins))
     refined.sort(key=lambda r: r[0])
+
+    # polish: with a free clock the capped loss has flat stretches where the
+    # optimizer can stall a second or two off; re-start the best few from
+    # shifted clock offsets and keep whatever improves.
+    if free_delta:
+        polished = []
+        for cost, x, y, d, assign, sol in refined[:4]:
+            best = (cost, x, y, d, assign, sol)
+            for dd in (-1.5, -0.75, 0.75, 1.5):
+                d1 = float(np.clip(d + dd, -cfg.time_window_s, cfg.time_window_s))
+                s1 = model.refine(x, y, d1, assign, True)
+                if s1 is None:
+                    continue
+                a1, c1 = model.assign(s1.x[0], s1.x[1], s1.x[2])
+                if c1 < best[0]:
+                    best = (c1, s1.x[0], s1.x[1], s1.x[2], a1, s1)
+            polished.append(best)
+        refined = sorted(polished + refined[4:], key=lambda r: r[0])
 
     # dedupe nearby solutions
     uniq = []
