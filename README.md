@@ -76,7 +76,12 @@ python -m venv .venv && .venv/bin/pip install -e '.[test]'      # also needs ffm
 | `python -m propgeo figures` | regenerate the images in `docs/img/` |
 
 ADS-B input is any CSV in OpenSky `state_vectors_data4` layout; readsb/adsb.lol column names work too. Older
-clips need historical ADS-B (e.g. OpenSky's Trino archive, research account).
+clips need historical ADS-B: adsb.lol publishes every day back to 2023 as open data
+([`globe_history`](https://github.com/adsblol/globe_history_2026), no account needed), and OpenSky's Trino
+archive needs a research account.
+
+**How exposed is a typical person?** See [`docs/results/exposure.md`](docs/results/exposure.md): measured
+Bay Area traffic from that archive, and the share of the US population living near an airport.
 
 ## Responsible use
 
